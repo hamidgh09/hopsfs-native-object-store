@@ -12,6 +12,8 @@
 //! # }
 //! ```
 //!
+pub mod native;
+
 use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
@@ -36,6 +38,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     task::{self, JoinHandle},
 };
+
 
 // Re-export minidfs for down-stream integration tests
 #[cfg(feature = "integration-test")]
@@ -71,7 +74,8 @@ impl HdfsObjectStore {
     /// # }
     /// ```
     pub fn with_url(url: &str) -> Result<Self> {
-        Ok(Self::new(Arc::new(Client::new(url).to_object_store_err()?)))
+      native::hopsfs_connect_with_url(url);
+      Ok(Self::new(Arc::new(Client::new(url).to_object_store_err()?)))
     }
 
     /// Creates a new HdfsObjectStore using the specified URL and Hadoop configs.

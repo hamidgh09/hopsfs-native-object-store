@@ -19,10 +19,13 @@ hdfs-native = "0.11"
 object_store = ">= 0.10, < 0.12"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync", "time"] }
+libc = "0.1.10"
+cc = "1.0"
 
 [dev-dependencies]
 env_logger = "0.11"
 serial_test = "3"
 
 [features]
-integration-test = ["hdfs-native/integration-test"]
+hopsfs-integration-test = [] 
+integration-test = ["hdfs-native/integration-test", "hopsfs-integration-test" ]
