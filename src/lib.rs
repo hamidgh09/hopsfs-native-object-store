@@ -7,12 +7,13 @@
 //! use hdfs_native_object_store::HdfsObjectStore;
 //! # use object_store::Result;
 //! # fn main() -> Result<()> {
-//! let store = HdfsObjectStore::with_url("hdfs://localhost:9000")?;
+//! let store = HdfsObjectStore::with_url("hdfs://localhost:8020")?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-pub mod native;
+mod client;
+mod native;
 
 use std::{
     collections::HashMap,
@@ -28,7 +29,6 @@ use futures::{
     stream::{BoxStream, StreamExt},
     FutureExt,
 };
-use hdfs_native::{client::FileStatus, file::FileWriter, Client, HdfsError, WriteOptions};
 use object_store::{
     path::Path, GetOptions, GetRange, GetResult, GetResultPayload, ListResult, MultipartUpload,
     ObjectMeta, ObjectStore, PutMode, PutMultipartOpts, PutOptions, PutPayload, PutResult, Result,
@@ -39,10 +39,13 @@ use tokio::{
     task::{self, JoinHandle},
 };
 
+use client::HopsClient;
+pub type Client = HopsClient;
 
 // Re-export minidfs for down-stream integration tests
 #[cfg(feature = "integration-test")]
 pub use hdfs_native::minidfs;
+use crate::client::{FileStatus, FileWriter, HdfsError, WriteOptions};
 
 #[derive(Debug)]
 pub struct HdfsObjectStore {
@@ -54,9 +57,8 @@ impl HdfsObjectStore {
     ///
     /// ```rust
     /// # use std::sync::Arc;
-    /// use hdfs_native::Client;
-    /// # use hdfs_native_object_store::HdfsObjectStore;
-    /// let client = Client::new("hdfs://127.0.0.1:9000").unwrap();
+    /// # use hdfs_native_object_store::{Client, HdfsObjectStore};
+    /// let client = Client::new("hdfs://127.0.0.1:8020").unwrap();
     /// let store = HdfsObjectStore::new(Arc::new(client));
     /// ```
     pub fn new(client: Arc<Client>) -> Self {
@@ -69,12 +71,11 @@ impl HdfsObjectStore {
     /// ```rust
     /// # use hdfs_native_object_store::HdfsObjectStore;
     /// # fn main() -> object_store::Result<()> {
-    /// let store = HdfsObjectStore::with_url("hdfs://127.0.0.1:9000")?;
+    /// let store = HdfsObjectStore::with_url("hdfs://127.0.0.1:8020")?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn with_url(url: &str) -> Result<Self> {
-      native::hopsfs_connect_with_url(url);
       Ok(Self::new(Arc::new(Client::new(url).to_object_store_err()?)))
     }
 
@@ -101,6 +102,16 @@ impl HdfsObjectStore {
     }
 
     async fn internal_copy(&self, from: &Path, to: &Path, overwrite: bool) -> Result<()> {
+        self.client.hdfs_copy(
+            &make_absolute_file(from),
+            &make_absolute_file(to),
+            overwrite
+        ).to_object_store_err()?;
+
+        Ok(())
+
+        //TODO: Remove this when you figured out how to handle overwrite
+        /*
         let overwrite = match self.client.get_file_info(&make_absolute_file(to)).await {
             Ok(_) if overwrite => true,
             Ok(_) => Err(HdfsError::AlreadyExists(make_absolute_file(to))).to_object_store_err()?,
@@ -132,6 +143,7 @@ impl HdfsObjectStore {
         new_file.close().await.to_object_store_err()?;
 
         Ok(())
+        */
     }
 
     async fn open_tmp_file(&self, file_path: &str) -> Result<(FileWriter, String)> {
@@ -451,7 +463,7 @@ trait HdfsErrorConvert<T> {
     fn to_object_store_err(self) -> Result<T>;
 }
 
-impl<T> HdfsErrorConvert<T> for hdfs_native::Result<T> {
+impl<T> HdfsErrorConvert<T> for client::Result<T> {
     fn to_object_store_err(self) -> Result<T> {
         self.map_err(|err| match err {
             HdfsError::FileNotFound(path) => object_store::Error::NotFound {

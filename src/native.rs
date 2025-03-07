@@ -2,12 +2,9 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use libc::c_ushort;
-use std::ffi::CString;
-use std::net::ToSocketAddrs;
-
+use std::cmp::PartialEq;
 use libc::{
-    c_char, c_int, c_short, c_uchar, c_void, int16_t, int32_t, int64_t, size_t, time_t, uint16_t,
+    c_char, c_int, c_short, c_void, int16_t, int32_t, int64_t, size_t, time_t, uint16_t,
 };
 
 /// Opaque Pointer of hdfsFS
@@ -35,6 +32,7 @@ pub type tOffset = int64_t;
 pub type tPort = uint16_t;
 
 #[repr(C)]
+#[derive(Debug, PartialEq)]
 pub enum tObjectKind {
     kObjectKindFile = 0x46,      // 'F'
     kObjectKindDirectory = 0x44, // 'D'
@@ -860,40 +858,4 @@ extern "C" {
     /// #### Return
     /// The buffer to release.
     pub fn hadoopRzBufferFree(file: *const hdfsFile, buffer: *const hadoopRzBuffer);
-}
-
-pub fn extract_host_and_port(uri: &str) -> (String, u16) {
-    let default_port = 8020;
-
-    // Remove "hdfs://" or "hopsfs://" if present
-    let stripped_uri = uri
-        .strip_prefix("hdfs://")
-        .or_else(|| uri.strip_prefix("hopsfs://"))
-        .unwrap_or(uri);
-
-    // Split into host and port
-    let mut parts = stripped_uri.split(':');
-    let host = parts.next().unwrap_or("").to_string();
-    let port = parts
-        .next()
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(default_port); // Use default if port is missing
-
-    (host, port)
-}
-
-pub fn hopsfs_connect_with_url(uri: &str) {
-    let (host_str, port_u16) = extract_host_and_port(uri);
-
-    let c_host = CString::new(host_str).expect("CString conversion failed");
-    let c_port: c_ushort = port_u16; 
-
-    unsafe {
-        let fs = hdfsConnect(c_host.as_ptr(), c_port);
-        if fs.is_null() {
-            eprintln!("Failed to connect to HDFS!");
-        } else {
-            println!("Successfully connected to HDFS.");
-        }
-    }
 }
