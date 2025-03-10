@@ -322,27 +322,20 @@ extern "C" {
     /// hdfsFS will be freed.
     pub fn hdfsDisconnect(fs: *const hdfsFS) -> c_int;
 
-    /// Open a hdfs file in given mode.
-    ///
-    /// #### Params
-    /// * ```fs``` - The configured filesystem handle.
-    /// * ```file``` - The file handle.
-    /// * ```flags``` - an ```|``` of ```bits/fcntl.h``` file flags -
-    /// supported flags are O_RDONLY, O_WRONLY (meaning create or overwrite
-    /// i.e., implies O_TRUNCAT), O_WRONLY|O_APPEND. Other flags are generally
-    /// ignored other than (O_RDWR || (O_EXCL & O_CREAT)) which return ```NULL``` and
-    /// set errno equal ENOTSUP.
-    /// * ```bufferSize``` - Size of buffer for read/write - pass 0 if you want
+    /// hdfsOpenFile - Open a hdfs file in given mode.
+    /// @param fs The configured filesystem handle.
+    /// @param path The full path to the file.
+    /// @param flags - an | of bits/fcntl.h file flags - supported flags are O_RDONLY,
+    /// O_WRONLY (meaning create or overwrite i.e., implies O_TRUNCAT),
+    /// O_WRONLY|O_APPEND. Other flags are generally ignored other than
+    /// (O_RDWR || (O_EXCL & O_CREAT)) which return NULL and set errno equal ENOTSUP.
+    /// @param bufferSize Size of buffer for read/write - pass 0 if you want
     /// to use the default configured values.
-    /// * ```replication``` Block replication - pass 0 if you want to use
+    /// @param replication Block replication - pass 0 if you want to use
     /// the default configured values.
-    /// * ```blocksize``` - Size of block - pass 0 if you want to use the
+    /// @param blocksize Size of block - pass 0 if you want to use the
     /// default configured values.
-    ///
-    /// #### Return
-    /// Returns 0 on success, -1 on error. On error, errno will be set appropriately.
-    /// If the hdfs file was valid, the memory associated with it will
-    /// be freed at the end of this call, even if there was an I/O error.
+    /// @return Returns the handle to the open file or NULL on error.
     pub fn hdfsOpenFile(
         fs: *const hdfsFS,
         path: *const c_char,

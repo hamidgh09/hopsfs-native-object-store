@@ -106,7 +106,7 @@ impl HdfsObjectStore {
             &make_absolute_file(from),
             &make_absolute_file(to),
             overwrite
-        ).to_object_store_err()?;
+        ).await.to_object_store_err()?;
 
         Ok(())
 
@@ -225,9 +225,9 @@ impl ObjectStore for HdfsObjectStore {
         let (mut tmp_file, tmp_file_path) = self.open_tmp_file(&final_file_path).await?;
 
         for bytes in payload {
-            tmp_file.write(bytes).await.to_object_store_err()?;
+            self.client.hdfs_write(tmp_file, bytes).await.to_object_store_err()?;
         }
-        tmp_file.close().await.to_object_store_err()?;
+        self.client.close(tmp_file).await.to_object_store_err()?;
 
         self.client
             .rename(&tmp_file_path, &final_file_path, overwrite)
@@ -504,15 +504,18 @@ impl HdfsMultipartWriter {
     ) -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
 
+        let writer_handle = Self::start_writer_task(client.clone(), writer, receiver);
+
         Self {
             client,
-            sender: Some((Self::start_writer_task(writer, receiver), sender)),
+            sender: Some((writer_handle, sender)),
             tmp_filename: tmp_filename.to_string(),
             final_filename: final_filename.to_string(),
         }
     }
 
     fn start_writer_task(
+        client: Arc<Client>,
         mut writer: FileWriter,
         mut part_receiver: mpsc::UnboundedReceiver<(oneshot::Sender<Result<()>>, PutPayload)>,
     ) -> JoinHandle<Result<()>> {
@@ -521,7 +524,7 @@ impl HdfsMultipartWriter {
                 match part_receiver.recv().await {
                     Some((sender, part)) => {
                         for bytes in part {
-                            if let Err(e) = writer.write(bytes).await.to_object_store_err() {
+                            if let Err(e) = client.hdfs_write(writer, bytes).await.to_object_store_err() {
                                 let _ = sender.send(Err(e));
                                 break 'outer;
                             }
@@ -529,7 +532,7 @@ impl HdfsMultipartWriter {
                         let _ = sender.send(Ok(()));
                     }
                     None => {
-                        return writer.close().await.to_object_store_err();
+                        return client.close(writer).await.to_object_store_err();
                     }
                 }
             }

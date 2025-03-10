@@ -1,14 +1,15 @@
-use std::ffi::CString;
+use std::ffi::{CString};
 
-use crate::native::{hdfsConnect, hdfsCopy, hdfsDisconnect, hdfsFS, hdfsFreeFileInfo, hdfsGetPathInfo, tObjectKind};
+use crate::native::{hdfsConnect, hdfsCopy, hdfsDisconnect, hdfsFS, hdfsFile, hdfsFreeFileInfo, hdfsGetPathInfo, tObjectKind, tSize};
 use bytes::Bytes;
 use futures::stream::{self, BoxStream, Stream};
-use libc::c_ushort;
+use libc::{c_int, c_short, c_ushort, c_void, int32_t, size_t};
 use std::{
     collections::HashMap,
     pin::Pin,
     task::{Context, Poll},
 };
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -33,23 +34,15 @@ pub type Result<T> = std::result::Result<T, HdfsError>;
 
 /// Derived from HDFS Client
 /// TODO:
-/// 1- Make it compatible with HopsFS
 /// 2- Implement the missing functions
 #[derive(Clone)]
 pub struct WriteOptions {
-    /// Block size. Default is retrieved from the server.
-    pub block_size: Option<u64>,
-    /// Replication factor. Default is retrieved from the server.
-    pub replication: Option<u32>,
-    /// Unix file permission, defaults to 0o644, which is "rw-r--r--" as a Unix permission.
-    /// This is the raw octal value represented in base 10.
-    pub permission: u32,
-    /// Whether to overwrite the file, defaults to false. If true and the
-    /// file does not exist, it will result in an error.
+    pub block_size: Option<c_int>,
+    pub replication: Option<c_short>,
     pub overwrite: bool,
-    /// Whether to create any missing parent directories, defaults to true. If false
-    /// and the parent directory does not exist, an error will be returned.
     pub create_parent: bool,
+    pub buffer_size: c_int,
+    pub flags: c_int,
 }
 
 impl Default for WriteOptions {
@@ -57,9 +50,10 @@ impl Default for WriteOptions {
         Self {
             block_size: None,
             replication: None,
-            permission: 0o644,
             overwrite: false,
             create_parent: true,
+            buffer_size: 0,
+            flags: 1,
         }
     }
 }
@@ -121,27 +115,44 @@ impl FileReader {
 }
 
 /// TODO: Implement FileWriter
-pub struct FileWriter {}
+#[derive(Clone, Copy)]
+pub struct FileWriter {
+    pub file: *mut hdfsFile
+}
+
 
 impl FileWriter {
-    pub fn new() -> Self {
-        FileWriter {}
-    }
-
-    pub async fn write(&mut self, mut buf: Bytes) -> Result<usize> {
-        unimplemented!("Write operation not implemented");
+    pub async fn write(&mut self, fs_internal: *const hdfsFS, mut buf: Bytes) -> Result<usize> {
+        use crate::native::hdfsWrite;
+        unsafe {
+            let ptr: *const u8 = buf.as_ptr();
+            let res = hdfsWrite(fs_internal, self.file, ptr as *const c_void, buf.len() as tSize);
+            if res == -1 {
+                Err(HdfsError::OperationFailed("File write operation failed".to_string()))?;
+            }
+        }
         Ok(buf.len())
     }
 
-    pub async fn close(&mut self) -> Result<()> {
-        unimplemented!("Close operation not implemented");
+    pub async fn close(&mut self, fs_internal: *const hdfsFS) -> Result<()> {
+        use crate::native::hdfsCloseFile;
+        unsafe {
+            let res = hdfsCloseFile(fs_internal, self.file);
+            if res == -1 {
+                Err(HdfsError::OperationFailed("File close operation failed".to_string()))?;
+            }
+        }
         Ok(())
     }
 }
 
+//TODO: VERY BAD! FIX THIS
+unsafe impl Send for FileWriter {}
+unsafe impl Sync for FileWriter {}
+
 #[derive(Debug)]
 pub struct HopsClient {
-    hdfs_internal: *mut hdfsFS,
+    pub hdfs_internal: *mut hdfsFS,
 }
 
 ///TODO: Make sure the unsafe impls are safe
@@ -231,12 +242,35 @@ impl HopsClient {
     }
 
     pub async fn create(&self, path: &str, opts: WriteOptions) -> Result<FileWriter> {
-        unimplemented!();
-        Ok(FileWriter::new())
+        use crate::native::hdfsOpenFile;
+
+        if self.get_file_info(path).await.is_ok(){
+            Err(HdfsError::AlreadyExists(path.to_string()))?
+        }
+
+        let path = CString::new(path).unwrap();
+        unsafe {
+            let hdfs_file = hdfsOpenFile(
+                self.hdfs_internal, path.as_ptr(),
+                opts.flags,
+                opts.buffer_size,
+                opts.replication.unwrap_or(0),
+                opts.block_size.unwrap_or(0) as int32_t
+            );
+            Ok(FileWriter { file: hdfs_file.cast_mut() })
+        }
     }
 
-    pub async fn rename(&self, _from: &str, _to: &str, _overwrite: bool) -> Result<()> {
-        unimplemented!("Rename not implemented");
+    pub async fn rename(&self, from: &str, to: &str, _overwrite: bool) -> Result<()> {
+        use crate::native::hdfsRename;
+        unsafe {
+            let _from = CString::new(from).unwrap();
+            let _to = CString::new(to).unwrap();
+            let res = hdfsRename(self.hdfs_internal, _from.as_ptr(), _to.as_ptr());
+            if res != 0 {
+                return Err(HdfsError::OperationFailed("rename failed!".to_string()))
+            }
+        }
         Ok(())
     }
 
@@ -252,7 +286,8 @@ impl HopsClient {
         }
     }
 
-    pub fn hdfs_copy(&self, src: &str, dst: &str, overwrite: bool) -> Result<()> {
+    pub async fn hdfs_copy(&self, src: &str, dst: &str, overwrite: bool) -> Result<()> {
+
         ///TODO: Check how overwrite should be handled!
         let src = CString::new(src).unwrap();
         let dst = CString::new(dst).unwrap();
@@ -272,6 +307,30 @@ impl HopsClient {
             ))
         }
     }
+
+    pub async fn hdfs_write(&self, file_writer: FileWriter, mut buf: Bytes) -> Result<()> {
+        use crate::native::hdfsWrite;
+        unsafe {
+            let ptr: *const u8 = buf.as_ptr();
+            let res = hdfsWrite(self.hdfs_internal, file_writer.file, ptr as *const c_void, buf.len() as tSize);
+            if res == -1 {
+                Err(HdfsError::OperationFailed("File write operation failed".to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn close(&self, file_writer: FileWriter) -> Result<()> {
+        use crate::native::hdfsCloseFile;
+        unsafe {
+            let res = hdfsCloseFile(self.hdfs_internal, file_writer.file);
+            if res == -1 {
+                Err(HdfsError::OperationFailed("File close operation failed".to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
 }
 
 fn extract_host_and_port(uri: &str) -> (String, u16) {
