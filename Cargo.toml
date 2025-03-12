@@ -21,6 +21,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync", "time"] }
 libc = "0.1.10"
 cc = "1.0"
+async-stream = "0.3.6"
 
 [dev-dependencies]
 env_logger = "0.11"

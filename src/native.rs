@@ -2,12 +2,9 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use libc::c_ushort;
-use std::ffi::CString;
-use std::net::ToSocketAddrs;
-
+use std::cmp::PartialEq;
 use libc::{
-    c_char, c_int, c_short, c_uchar, c_void, int16_t, int32_t, int64_t, size_t, time_t, uint16_t,
+    c_char, c_int, c_short, c_void, int16_t, int32_t, int64_t, size_t, time_t, uint16_t,
 };
 
 /// Opaque Pointer of hdfsFS
@@ -35,6 +32,7 @@ pub type tOffset = int64_t;
 pub type tPort = uint16_t;
 
 #[repr(C)]
+#[derive(Debug, PartialEq)]
 pub enum tObjectKind {
     kObjectKindFile = 0x46,      // 'F'
     kObjectKindDirectory = 0x44, // 'D'
@@ -99,7 +97,7 @@ extern "C" {
     ///
     /// #### Params
     /// * ```file``` - The HDFS file
-    /// * ```stats``` - (out parameter) on a successful return, the read statistics.  
+    /// * ```stats``` - (out parameter) on a successful return, the read statistics.
     /// Unchanged otherwise. You must free the returned statistics with
     /// hdfsFileFreeReadStatistics.
     ///
@@ -137,7 +135,7 @@ extern "C" {
     /// Or ```NULL``` is equivelant to hhdfsConnect(host, port)
     ///
     /// #### Return
-    /// Returns a handle to the filesystem or ```NULL``` on error.  
+    /// Returns a handle to the filesystem or ```NULL``` on error.
     pub fn hdfsConnectAsUser(
         host: *const c_char,
         uint16_t: u16,
@@ -324,27 +322,20 @@ extern "C" {
     /// hdfsFS will be freed.
     pub fn hdfsDisconnect(fs: *const hdfsFS) -> c_int;
 
-    /// Open a hdfs file in given mode.
-    ///
-    /// #### Params
-    /// * ```fs``` - The configured filesystem handle.
-    /// * ```file``` - The file handle.
-    /// * ```flags``` - an ```|``` of ```bits/fcntl.h``` file flags -
-    /// supported flags are O_RDONLY, O_WRONLY (meaning create or overwrite
-    /// i.e., implies O_TRUNCAT), O_WRONLY|O_APPEND. Other flags are generally
-    /// ignored other than (O_RDWR || (O_EXCL & O_CREAT)) which return ```NULL``` and
-    /// set errno equal ENOTSUP.
-    /// * ```bufferSize``` - Size of buffer for read/write - pass 0 if you want
+    /// hdfsOpenFile - Open a hdfs file in given mode.
+    /// @param fs The configured filesystem handle.
+    /// @param path The full path to the file.
+    /// @param flags - an | of bits/fcntl.h file flags - supported flags are O_RDONLY,
+    /// O_WRONLY (meaning create or overwrite i.e., implies O_TRUNCAT),
+    /// O_WRONLY|O_APPEND. Other flags are generally ignored other than
+    /// (O_RDWR || (O_EXCL & O_CREAT)) which return NULL and set errno equal ENOTSUP.
+    /// @param bufferSize Size of buffer for read/write - pass 0 if you want
     /// to use the default configured values.
-    /// * ```replication``` Block replication - pass 0 if you want to use
+    /// @param replication Block replication - pass 0 if you want to use
     /// the default configured values.
-    /// * ```blocksize``` - Size of block - pass 0 if you want to use the
+    /// @param blocksize Size of block - pass 0 if you want to use the
     /// default configured values.
-    ///
-    /// #### Return
-    /// Returns 0 on success, -1 on error. On error, errno will be set appropriately.
-    /// If the hdfs file was valid, the memory associated with it will
-    /// be freed at the end of this call, even if there was an I/O error.
+    /// @return Returns the handle to the open file or NULL on error.
     pub fn hdfsOpenFile(
         fs: *const hdfsFS,
         path: *const c_char,
@@ -374,7 +365,7 @@ extern "C" {
     /// * ```path``` - The path to look for
     ///
     /// #### Return
-    /// Returns 0 on success, -1 on error.  
+    /// Returns 0 on success, -1 on error.
     pub fn hdfsExists(fs: *const hdfsFS, path: *const c_char) -> c_int;
 
     /// Seek to given offset in file.
@@ -587,7 +578,7 @@ extern "C" {
     pub fn hdfsSetWorkingDirectory(fs: *const hdfsFS, path: *const c_char) -> c_int;
 
     /// Make the given file and all non-existent parents into directories.
-    ///  
+    ///
     /// #### Params
     /// * ```fs``` - The configured filesystem handle.
     /// * ```path``` - The path of the directory.
@@ -802,7 +793,7 @@ extern "C" {
     ///
     /// #### Params
     /// * ```opts``` - The options structure to free.
-    /// Any associated ByteBufferPool will also be freed.  
+    /// Any associated ByteBufferPool will also be freed.
     pub fn hadoopRzOptionsFree(opts: *const hadoopRzOptions);
 
     /// Perform a byte buffer read. If possible, this will be a zero-copy
@@ -860,40 +851,4 @@ extern "C" {
     /// #### Return
     /// The buffer to release.
     pub fn hadoopRzBufferFree(file: *const hdfsFile, buffer: *const hadoopRzBuffer);
-}
-
-pub fn extract_host_and_port(uri: &str) -> (String, u16) {
-    let default_port = 8020;
-
-    // Remove "hdfs://" or "hopsfs://" if present
-    let stripped_uri = uri
-        .strip_prefix("hdfs://")
-        .or_else(|| uri.strip_prefix("hopsfs://"))
-        .unwrap_or(uri);
-
-    // Split into host and port
-    let mut parts = stripped_uri.split(':');
-    let host = parts.next().unwrap_or("").to_string();
-    let port = parts
-        .next()
-        .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(default_port); // Use default if port is missing
-
-    (host, port)
-}
-
-pub fn hopsfs_connect_with_url(uri: &str) {
-    let (host_str, port_u16) = extract_host_and_port(uri);
-
-    let c_host = CString::new(host_str).expect("CString conversion failed");
-    let c_port: c_ushort = port_u16; 
-
-    unsafe {
-        let fs = hdfsConnect(c_host.as_ptr(), c_port);
-        if fs.is_null() {
-            eprintln!("Failed to connect to HDFS!");
-        } else {
-            println!("Successfully connected to HDFS.");
-        }
-    }
 }
