@@ -39,11 +39,11 @@ use tokio::{
     task::{self, JoinHandle},
 };
 
-use client::HopsClient;
+pub use client::HopsClient;
 pub type Client = HopsClient;
 
 // Re-export minidfs for down-stream integration tests
-use crate::client::{FileStatus, FileWriter, HdfsError, WriteOptions};
+pub use crate::client::{FileStatus, FileWriter, HdfsError, WriteOptions};
 #[cfg(feature = "integration-test")]
 pub use hdfs_native::minidfs;
 
@@ -233,6 +233,8 @@ impl ObjectStore for HdfsObjectStore {
 
     /// Reads data for the specified location.
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
+        use crate::client::read_range_stream;
+
         if options.if_match.is_some()
             || options.if_none_match.is_some()
             || options.if_modified_since.is_some()
@@ -254,15 +256,22 @@ impl ObjectStore for HdfsObjectStore {
 
         let reader = self
             .client
-            .read(&make_absolute_file(location))
+            .open_for_read(&make_absolute_file(location))
             .await
             .to_object_store_err()?;
-        let stream = reader
-            .read_range_stream(range.start, range.end - range.start)
-            .map(|b| b.to_object_store_err())
+
+        let client = Arc::clone(&self.client);
+        let stream = read_range_stream(
+            client,
+            reader,
+            range.start,
+            range.end
+        ).await;
+
+        let box_stream = stream.map(|b| b.to_object_store_err())
             .boxed();
 
-        let payload = GetResultPayload::Stream(stream);
+        let payload = GetResultPayload::Stream(box_stream);
 
         Ok(GetResult {
             payload,
@@ -292,7 +301,7 @@ impl ObjectStore for HdfsObjectStore {
             last_modified: DateTime::<Utc>::from_timestamp(status.modification_time as i64, 0)
                 .unwrap(),
             size: status.length,
-            e_tag: None,
+            e_tag: None, //TODO: Check what this should be
             version: None,
         })
     }

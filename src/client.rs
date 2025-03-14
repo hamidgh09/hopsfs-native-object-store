@@ -1,14 +1,18 @@
-use libc::O_WRONLY;
+use libc::{O_RDONLY, O_WRONLY};
 use std::ffi::{CStr, CString};
 
-use crate::native::{hdfsConnect, hdfsCopy, hdfsDisconnect, hdfsFS, hdfsFile, hdfsFileInfo, hdfsFreeFileInfo, hdfsGetPathInfo, tObjectKind, tSize};
+use crate::native::{hdfsCloseFile, hdfsConnect, hdfsCopy, hdfsDisconnect, hdfsFS, hdfsFile,
+                    hdfsFileInfo, hdfsFreeFileInfo, hdfsGetPathInfo, tObjectKind, tSize};
 use bytes::Bytes;
 use futures::stream::{self, Stream};
+use futures::StreamExt;
 use libc::{c_int, c_short, c_ushort, c_void, int32_t};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::Arc;
-use std::collections::HashMap;
 use thiserror::Error;
+
+const DATA_BLOCK_SIZE: usize = 65536;
 
 #[derive(Error, Debug)]
 pub enum HdfsError {
@@ -93,25 +97,20 @@ impl FileStatus {
     }
 }
 
-/// TODO: Implement FileReader
-pub struct FileReader {}
+pub struct FileReader {
+    pub file: Arc<AtomicPtr<hdfsFile>>,
+    path: String
+}
 
 impl FileReader {
-    pub fn new() -> Self {
-        FileReader {}
+    pub fn new(file: *mut hdfsFile, path: String) -> Result<Self> {
+        Ok(FileReader {
+            file: Arc::new(AtomicPtr::new(file)),
+            path
+        })
     }
-
-    pub fn file_length(&self) -> usize {
-        unimplemented!("File length not implemented");
-    }
-
-    pub fn read_range_stream(
-        &self,
-        _offset: usize,
-        _length: usize,
-    ) -> impl Stream<Item = Result<Bytes>> {
-        unimplemented!("Read range stream not implemented");
-        Box::pin(stream::empty())
+    pub fn get_file_ptr(&self) -> *const hdfsFile {
+        self.file.load(Ordering::SeqCst)
     }
 }
 
@@ -220,9 +219,23 @@ impl HopsClient {
         }
     }
 
-    pub async fn read(&self, _path: &str) -> Result<FileReader> {
-        unimplemented!("Read not implemented");
-        Ok(FileReader::new())
+    pub async fn open_for_read(&self, path: &str) -> Result<FileReader> {
+        use crate::native::hdfsOpenFile;
+
+        if self.get_file_info(path).await.is_err() {
+            Err(HdfsError::InvalidPath(path.to_string()))?
+        }
+        let path_cstr = CString::new(path).unwrap();
+        unsafe {
+            //TODO: Make sure zeroes are correct!
+            let hdfs_file = hdfsOpenFile(
+                self.get_client_ptr(), path_cstr.as_ptr(),
+                O_RDONLY, 0, 0, 0
+            );
+
+            FileReader::new(hdfs_file.cast_mut(), path.to_string())
+        }
+
     }
 
     pub async fn create(&self, path: &str, opts: WriteOptions) -> Result<FileWriter> {
@@ -281,9 +294,8 @@ impl HopsClient {
 
     pub async fn list_directory(&self, prefix: &str) -> Result<Vec<FileStatus>> {
         use crate::native::hdfsListDirectory;
-        let path_cstr = CString::new(prefix).unwrap_or(
-            Err(HdfsError::InvalidPath(prefix.to_string()))?
-        );
+        let path_cstr = CString::new(prefix)
+            .map_err(|_| HdfsError::InvalidPath(prefix.to_string()))?;
 
         let mut num_entries: c_int = 0;
         unsafe {
@@ -367,6 +379,18 @@ impl HopsClient {
         }
         Ok(())
     }
+
+    pub async fn mkdir(&self, path: &str) -> Result<()> {
+        use crate::native::hdfsCreateDirectory;
+        let path_cstr = CString::new(path).unwrap();
+        unsafe {
+            let res = hdfsCreateDirectory(self.get_client_ptr(), path_cstr.as_ptr());
+            if res == -1 {
+                return Err(HdfsError::OperationFailed("Failed to create directory".to_string()));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn extract_host_and_port(uri: &str) -> (String, u16) {
@@ -386,3 +410,51 @@ fn extract_host_and_port(uri: &str) -> (String, u16) {
 
     (host, port)
 }
+
+pub async fn read_range_stream(
+    client: Arc<HopsClient>,
+    file_reader: FileReader,
+    start: usize,
+    end: usize,
+) -> impl Stream<Item = Result<Bytes>> {
+    use crate::native::hdfsPread;
+
+    // clone the connection and file pointer once so that it can be further cloned inside the closure.
+    let connection = client.hdfs_internal.clone();
+    let file_pointer = file_reader.file.clone();
+
+    stream::unfold(start, move |current_start| {
+        // Clone the connection and file pointer for each iteration.
+        let connection = connection.clone();
+        let file_pointer = file_pointer.clone();
+        unsafe {
+            async move {
+                if current_start >= end {
+                    hdfsCloseFile(connection.load(Ordering::SeqCst), file_pointer.load(Ordering::SeqCst));
+                    None
+                } else {
+                    let current_end = std::cmp::min(current_start + DATA_BLOCK_SIZE, end);
+                    let length = current_end - current_start;
+                    let mut buffer = vec![0u8; length];
+                    let result = hdfsPread(
+                        connection.load(Ordering::SeqCst),
+                        file_pointer.load(Ordering::SeqCst),
+                        current_start as i64,
+                        buffer.as_mut_ptr() as *mut c_void,
+                        length as tSize,
+                    );
+                    if result <= 0 || result as usize != length {
+                        hdfsCloseFile(connection.load(Ordering::SeqCst), file_pointer.load(Ordering::SeqCst));
+                        return Some((
+                            Err(HdfsError::OperationFailed("Failed to read file".to_string())),
+                            end,
+                        ));
+                    }
+                    let result_bytes = Bytes::copy_from_slice(&buffer[..result as usize]);
+                    Some((Ok(result_bytes), current_end))
+                }
+            }
+        }
+    })
+}
+

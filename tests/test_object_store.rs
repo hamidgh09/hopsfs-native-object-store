@@ -1,46 +1,56 @@
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "hopsfs-integration-test")]
 mod test {
     use bytes::{Buf, BufMut, BytesMut};
-    use hdfs_native::{
-        minidfs::{DfsFeatures, MiniDfs},
-        Client, WriteOptions,
-    };
-    use hdfs_native_object_store::{HdfsErrorConvert, HdfsObjectStore};
+    use hdfs_native_object_store::{HdfsObjectStore, HopsClient, WriteOptions};
     use object_store::{PutMode, PutOptions, PutPayload};
     use serial_test::serial;
-    use std::{collections::HashSet, sync::Arc};
+    use std::sync::Arc;
 
     pub const TEST_FILE_INTS: usize = 64 * 1024 * 1024;
 
     #[tokio::test]
     #[serial]
     async fn test_object_store() -> object_store::Result<()> {
-        let dfs = MiniDfs::with_features(&HashSet::from([DfsFeatures::HA]));
-        let client = Client::new(&dfs.url).to_object_store_err()?;
+        let client = HopsClient::new("hdfs://127.0.0.1:8020").unwrap();
 
+        let write_opts = WriteOptions {
+            block_size: None,
+            replication: None,
+            overwrite: true,
+            create_parent: true,
+            buffer_size: 0
+        };
         // Create a test file with the client directly to sanity check reads and lists
         let mut file = client
-            .create("/testfile", WriteOptions::default())
+            .create("/testfile", write_opts)
             .await
             .unwrap();
         let mut buf = BytesMut::new();
         for i in 0..TEST_FILE_INTS as i32 {
             buf.put_i32(i);
         }
-        file.write(buf.freeze()).await.unwrap();
-        file.close().await.unwrap();
+        client.hdfs_write(&file, buf.freeze()).await.unwrap();
+        client.close_file(file).await.unwrap();
 
-        client.mkdirs("/testdir", 0o755, true).await.unwrap();
+        client.mkdir("/testdir").await.unwrap();
 
         let store = HdfsObjectStore::new(Arc::new(client));
 
+        println!("testing functions");
         test_object_store_head(&store).await?;
+        println!("testing functions: 1 passed");
         test_object_store_list(&store).await?;
+        println!("testing functions: 2 passed");
         test_object_store_rename(&store).await?;
+        println!("testing functions: 3 passed");
         test_object_store_read(&store).await?;
+        println!("testing functions: 4 passed");
         test_object_store_write(&store).await?;
+        println!("testing functions: 5 passed");
         test_object_store_write_multipart(&store).await?;
+        println!("testing functions: 6 passed");
         test_object_store_copy(&store).await?;
+        println!("testing functions: 7 passed");
 
         Ok(())
     }
