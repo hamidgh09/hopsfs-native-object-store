@@ -28,12 +28,7 @@ use object_store::{
     UploadPart,
 };
 use std::collections::VecDeque;
-use std::{
-    collections::HashMap,
-    fmt::{Display, Formatter},
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashMap, fmt::{Display, Formatter}, path::PathBuf, sync::Arc};
 use tokio::{
     sync::{mpsc, oneshot},
     task::{self, JoinHandle},
@@ -42,6 +37,7 @@ use tokio::{
 pub use client::HopsClient;
 pub type Client = HopsClient;
 
+use crate::client::ReadRangeStream;
 // Re-export minidfs for down-stream integration tests
 pub use crate::client::{FileStatus, FileWriter, HdfsError, WriteOptions};
 #[cfg(feature = "integration-test")]
@@ -171,7 +167,6 @@ impl ObjectStore for HdfsObjectStore {
         let overwrite = match opts.mode {
             PutMode::Create => false,
             PutMode::Overwrite => true,
-            //TODO: Do we need to support update mode?
             PutMode::Update(_) => {
                 return Err(object_store::Error::NotSupported {
                     source: "Update mode not supported".to_string().into(),
@@ -233,7 +228,6 @@ impl ObjectStore for HdfsObjectStore {
 
     /// Reads data for the specified location.
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
-        use crate::client::read_range_stream;
 
         if options.if_match.is_some()
             || options.if_none_match.is_some()
@@ -260,13 +254,14 @@ impl ObjectStore for HdfsObjectStore {
             .await
             .to_object_store_err()?;
 
-        let client = Arc::clone(&self.client);
-        let stream = read_range_stream(
-            client,
-            reader,
+        let connection = self.client.get_connection();
+
+        let stream = ReadRangeStream::new(
+            connection,
+            reader.file,
             range.start,
-            range.end
-        ).await;
+            range.end,
+        );
 
         let box_stream = stream.map(|b| b.to_object_store_err())
             .boxed();
@@ -301,7 +296,7 @@ impl ObjectStore for HdfsObjectStore {
             last_modified: DateTime::<Utc>::from_timestamp(status.modification_time as i64, 0)
                 .unwrap(),
             size: status.length,
-            e_tag: None, //TODO: Check what this should be
+            e_tag: None,
             version: None,
         })
     }
@@ -334,6 +329,7 @@ impl ObjectStore for HdfsObjectStore {
         let start_prefix = prefix.map(make_absolute_dir).unwrap_or("".to_string());
         let client = Arc::clone(&self.client);
 
+        //TODO: Also check with HDFS-RS
         try_stream! {
             let mut pending = VecDeque::new();
             let initial_objects: Vec<FileStatus> = client.list_directory(&start_prefix).await.to_object_store_err()?;
@@ -380,7 +376,6 @@ impl ObjectStore for HdfsObjectStore {
     }
 
     /// Renames a file. This operation is guaranteed to be atomic.
-    /// TODO: Ensure all directory operations are atomic on the go client!
     async fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         Ok(self
             .client
