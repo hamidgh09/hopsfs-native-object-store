@@ -11,26 +11,23 @@ mod test {
     #[tokio::test]
     #[serial]
     async fn test_object_store() -> object_store::Result<()> {
-        let client = HopsClient::new("hdfs://127.0.0.1:8020").unwrap();
+        let client = HopsClient::with_url("hdfs://127.0.0.1:8020").unwrap();
 
         let write_opts = WriteOptions {
             block_size: None,
             replication: None,
             overwrite: true,
             create_parent: true,
-            buffer_size: 0
+            buffer_size: 0,
         };
         // Create a test file with the client directly to sanity check reads and lists
-        let mut file = client
-            .create("/testfile", write_opts)
-            .await
-            .unwrap();
+        let file = client.create("/testfile", write_opts).await.unwrap();
         let mut buf = BytesMut::new();
         for i in 0..TEST_FILE_INTS as i32 {
             buf.put_i32(i);
         }
-        client.hdfs_write(&file, buf.freeze()).await.unwrap();
-        client.close_file(file).await.unwrap();
+        file.hdfs_write(buf.freeze()).await.unwrap();
+        file.close_file().await.unwrap();
 
         client.mkdir("/testdir").await.unwrap();
 
@@ -38,19 +35,19 @@ mod test {
 
         println!("testing functions");
         test_object_store_head(&store).await?;
-        println!("testing functions: 1 passed");
+        println!("test_object_store_head passed");
         test_object_store_list(&store).await?;
-        println!("testing functions: 2 passed");
+        println!("test_object_store_list passed");
         test_object_store_rename(&store).await?;
-        println!("testing functions: 3 passed");
+        println!("test_object_store_rename passed");
         test_object_store_read(&store).await?;
-        println!("testing functions: 4 passed");
+        println!("test_object_store_read passed");
         test_object_store_write(&store).await?;
-        println!("testing functions: 5 passed");
+        println!("test_object_store_write passed");
         test_object_store_write_multipart(&store).await?;
-        println!("testing functions: 6 passed");
+        println!("test_object_store_write_multipart passed");
         test_object_store_copy(&store).await?;
-        println!("testing functions: 7 passed");
+        println!("test_object_store_copy passed");
 
         Ok(())
     }
@@ -200,7 +197,6 @@ mod test {
 
         let mut uploader = store.put_multipart(&"/newfile".into()).await?;
         uploader.complete().await?;
-
         store.head(&Path::from("/newfile")).await?;
 
         // Check a small files, a file that is exactly one block, and a file slightly bigger than a block
