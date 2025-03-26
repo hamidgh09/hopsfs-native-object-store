@@ -43,11 +43,8 @@ use tokio::{
 };
 pub type Client = HopsClient;
 
-// Re-export minidfs for down-stream integration tests
 use crate::client::ReadRangeStream;
 pub use crate::client::{FileStatus, FileWriter, HdfsError, WriteOptions};
-#[cfg(feature = "integration-test")]
-pub use hdfs_native::minidfs;
 
 #[derive(Debug)]
 pub struct HdfsObjectStore {
@@ -410,12 +407,6 @@ impl ObjectStore for HdfsObjectStore {
     }
 }
 
-#[cfg(feature = "integration-test")]
-pub trait HdfsErrorConvert<T> {
-    fn to_object_store_err(self) -> Result<T>;
-}
-
-#[cfg(not(feature = "integration-test"))]
 trait HdfsErrorConvert<T> {
     fn to_object_store_err(self) -> Result<T>;
 }

@@ -1,1 +1,1 @@
-cargo test --features hopsfs-integration-test -- --nocapture
+cargo test --features integration-test -- --nocapture

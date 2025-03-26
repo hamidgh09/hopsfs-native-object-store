@@ -1,4 +1,4 @@
-#[cfg(feature = "hopsfs-integration-test")]
+#[cfg(feature = "integration-test")]
 mod test {
     use bytes::{Buf, BufMut, BytesMut};
     use hdfs_native_object_store::{HdfsObjectStore, HopsClient, WriteOptions};

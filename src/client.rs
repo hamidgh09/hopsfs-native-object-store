@@ -560,6 +560,11 @@ impl HopsClient {
             Err(HdfsError::AlreadyExists(dst.to_string()))?
         }
 
+        let src_exists = self.check_file_exists(src).await?;
+        if !src_exists {
+            Err(HdfsError::FileNotFound(src.to_string()))?
+        }
+
         let src_cstr = CString::new(src).unwrap();
         let dst_cstr = CString::new(dst).unwrap();
         let connection = self.get_connection();

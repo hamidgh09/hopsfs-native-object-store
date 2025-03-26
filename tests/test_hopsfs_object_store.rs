@@ -1,4 +1,4 @@
-#[cfg(feature = "hopsfs-integration-test")]
+#[cfg(feature = "integration-test")]
 mod test {
     use bytes::{BufMut, Bytes, BytesMut};
     use futures::StreamExt;
@@ -16,9 +16,8 @@ mod test {
 
     #[test]
     fn test_hopsfs_connect_with_config() -> object_store::Result<()> {
-        //TODO: Fix this
-        let config1 = HashMap::new();
-        HdfsObjectStore::with_config("hdfs://127.0.0.1:8020", config1);
+        let config = HashMap::new();
+        HdfsObjectStore::with_config("hdfs://127.0.0.1:8020", config)?;
         Ok(())
     }
     #[tokio::test]
