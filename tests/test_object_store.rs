@@ -1,46 +1,53 @@
 #[cfg(feature = "integration-test")]
 mod test {
     use bytes::{Buf, BufMut, BytesMut};
-    use hdfs_native::{
-        minidfs::{DfsFeatures, MiniDfs},
-        Client, WriteOptions,
-    };
-    use hdfs_native_object_store::{HdfsErrorConvert, HdfsObjectStore};
+    use hdfs_native_object_store::{HdfsObjectStore, HopsClient, WriteOptions};
     use object_store::{PutMode, PutOptions, PutPayload};
     use serial_test::serial;
-    use std::{collections::HashSet, sync::Arc};
+    use std::sync::Arc;
 
     pub const TEST_FILE_INTS: usize = 64 * 1024 * 1024;
 
     #[tokio::test]
     #[serial]
     async fn test_object_store() -> object_store::Result<()> {
-        let dfs = MiniDfs::with_features(&HashSet::from([DfsFeatures::HA]));
-        let client = Client::new(&dfs.url).to_object_store_err()?;
+        let client = HopsClient::with_url("hdfs://127.0.0.1:8020").unwrap();
 
+        let write_opts = WriteOptions {
+            block_size: None,
+            replication: None,
+            overwrite: true,
+            create_parent: true,
+            buffer_size: 0,
+        };
         // Create a test file with the client directly to sanity check reads and lists
-        let mut file = client
-            .create("/testfile", WriteOptions::default())
-            .await
-            .unwrap();
+        let file = client.create("/testfile", write_opts).await.unwrap();
         let mut buf = BytesMut::new();
         for i in 0..TEST_FILE_INTS as i32 {
             buf.put_i32(i);
         }
-        file.write(buf.freeze()).await.unwrap();
-        file.close().await.unwrap();
+        file.hdfs_write(buf.freeze()).await.unwrap();
+        file.close_file().await.unwrap();
 
-        client.mkdirs("/testdir", 0o755, true).await.unwrap();
+        client.mkdir("/testdir").await.unwrap();
 
         let store = HdfsObjectStore::new(Arc::new(client));
 
+        println!("testing functions");
         test_object_store_head(&store).await?;
+        println!("test_object_store_head passed");
         test_object_store_list(&store).await?;
+        println!("test_object_store_list passed");
         test_object_store_rename(&store).await?;
+        println!("test_object_store_rename passed");
         test_object_store_read(&store).await?;
+        println!("test_object_store_read passed");
         test_object_store_write(&store).await?;
+        println!("test_object_store_write passed");
         test_object_store_write_multipart(&store).await?;
+        println!("test_object_store_write_multipart passed");
         test_object_store_copy(&store).await?;
+        println!("test_object_store_copy passed");
 
         Ok(())
     }
@@ -190,7 +197,6 @@ mod test {
 
         let mut uploader = store.put_multipart(&"/newfile".into()).await?;
         uploader.complete().await?;
-
         store.head(&Path::from("/newfile")).await?;
 
         // Check a small files, a file that is exactly one block, and a file slightly bigger than a block
