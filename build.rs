@@ -1,39 +1,31 @@
+use fs_extra::dir::CopyOptions;
+use log::info;
 use std::env;
 use std::fs::{self, File};
 use std::io;
-use std::path::{Path, PathBuf};
 use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+use url::Url;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
 
-    if env::var("CARGO_FEATURE_USE_LATEST_LIB").is_ok() {
-        extract_tarball()?;
+    let lib_url = env::var("HOPS_LIB_URL").unwrap_or_default();
+    let lib_dir = Path::new("lib");
+    if !lib_dir.exists() {
+        fs::create_dir(lib_dir)?;
+    }
+
+    if !lib_url.is_empty() {
+        extract_tarball(lib_url, lib_dir)?;
     }
 
     set_libraries();
     Ok(())
 }
 
-fn extract_tarball() -> Result<(), Box<dyn std::error::Error>> {
-    let lib_dir = Path::new("lib");
-    if lib_dir.exists() {
-        let found = fs::read_dir(lib_dir)?
-            .filter_map(Result::ok)
-            .any(|entry| entry.path().extension().and_then(|s| s.to_str()) == Some("a"));
-        if found {
-            println!("The lib directory is not empty, skipping download. \n\
-            If you want to force a download, delete the lib directory and re-run the build script.");
-            set_libraries();
-            return Ok(());
-        }
-    } else {
-        fs::create_dir(lib_dir)?;
-    }
-
-    let url = env::var("HOPS_LIB_URL")
-        .expect("Please set the HOPS_LIB_URL environment variable.");
-
-    let parsed_url = url::Url::parse(&url)?;
+fn extract_tarball(url: String, lib_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let parsed_url = Url::parse(&url)?;
     let filename = parsed_url
         .path_segments()
         .and_then(|segments| segments.last())
@@ -41,14 +33,19 @@ fn extract_tarball() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("Could not extract filename from URL")?;
     let tarball_path = Path::new(filename);
 
-    println!("Downloading tarball from {}", url);
-    let mut response = reqwest::blocking::get(&url)?;
+    info!("Downloading tarball from {}", url);
+
+    let client = reqwest::blocking::Client::new();
+    let mut response = client
+        .get(&url)
+        //        .basic_auth("test", Some("test"))
+        .send()?;
     if !response.status().is_success() {
         return Err(format!("Failed to download file: HTTP {}", response.status()).into());
     }
     let mut tarball_file = File::create(&tarball_path)?;
     io::copy(&mut response, &mut tarball_file)?;
-    println!("Downloaded tarball to {:?}", tarball_path);
+    info!("Downloaded tarball to {:?}", tarball_path);
 
     let extract_dir = PathBuf::from("temp_extracted");
     if extract_dir.exists() {
@@ -56,53 +53,42 @@ fn extract_tarball() -> Result<(), Box<dyn std::error::Error>> {
     }
     fs::create_dir(&extract_dir)?;
 
-    let is_gzipped = tarball_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext_str| ext_str.eq_ignore_ascii_case("gz"))
-        .unwrap_or(false);
-
     let tarball_file = File::open(&tarball_path)?;
-    if is_gzipped {
-        let decompressor = flate2::read::GzDecoder::new(tarball_file);
-        let mut archive = tar::Archive::new(decompressor);
-        archive.unpack(&extract_dir)?;
-    } else {
-        let mut archive = tar::Archive::new(tarball_file);
-        archive.unpack(&extract_dir)?;
-    }
-    println!("Extracted tarball to {:?}", extract_dir);
+    let decompressor = flate2::read::GzDecoder::new(tarball_file);
+    let mut archive = tar::Archive::new(decompressor);
+    archive.unpack(&extract_dir)?;
+    info!("Extracted tarball to {:?}", extract_dir);
 
-    let mut lib_file_path: Option<PathBuf> = None;
-    for entry in walkdir::WalkDir::new(&extract_dir) {
-        let entry = entry?;
-        if entry.file_type().is_file() {
-            if let Some(ext) = entry.path().extension() {
-                if ext == "a" {
-                    lib_file_path = Some(entry.path().to_path_buf());
-                    break;
-                }
+    let subdirs: Vec<PathBuf> = fs::read_dir(&extract_dir)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            if path.is_dir() {
+                Some(path)
+            } else {
+                None
             }
-        }
+        })
+        .collect();
+
+    if subdirs.len() != 1 {
+        return Err("Expected exactly one subdirectory in the extracted tarball".into());
     }
 
-    let lib_file_path = lib_file_path.ok_or("No .a file found in extracted archive")?;
-    println!("Found library file at {:?}", lib_file_path);
-
-    //TODO: Fix this
-    /*
-    let destination = Path::new(
-        lib_file_path
-            .file_name()
-            .ok_or("Failed to get library filename")?,
+    let extracted_folder = &subdirs[0];
+    let search_dir = extracted_folder.join("lib/native/libhdfs-golang");
+    let mut options = CopyOptions::default();
+    options.overwrite = true;
+    options.content_only = true;
+    fs_extra::dir::copy(&search_dir, lib_dir, &options)?;
+    info!(
+        "Copied library and header files to directory: {:?}",
+        lib_dir
     );
-    fs::copy(&lib_file_path, &destination)?;
-    println!("Copied library file to {:?}", destination);
-    */
-    // Cleanup: remove the extracted directory and downloaded tarball.
+
     fs::remove_dir_all(&extract_dir)?;
     fs::remove_file(&tarball_path)?;
-    println!("Cleaned up temporary files");
+    info!("Cleaned up temporary files");
     Ok(())
 }
 
@@ -113,7 +99,6 @@ fn set_libraries() {
     println!("cargo:rustc-link-lib=static=hdfs");
     println!("cargo:rustc-link-lib=framework=Security");
     println!("cargo:rustc-link-lib=framework=CoreFoundation");
-
 }
 
 #[cfg(target_os = "linux")]
