@@ -35,11 +35,15 @@ fn extract_tarball(url: String, lib_dir: &Path) -> Result<(), Box<dyn std::error
 
     info!("Downloading tarball from {}", url);
 
+    let lib_username = env::var("HOPS_LIB_USERNAME").unwrap_or_default();
+    let lib_password = env::var("HOPS_LIB_PASSWORD").unwrap_or_default();
+
     let client = reqwest::blocking::Client::new();
-    let mut response = client
-        .get(&url)
-        //        .basic_auth("test", Some("test"))
-        .send()?;
+    let mut request_builder = client.get(&url);
+    if !lib_username.is_empty() && !lib_password.is_empty() {
+        request_builder = request_builder.basic_auth(lib_username, Some(lib_password));
+    }
+    let mut response = request_builder.send()?;
     if !response.status().is_success() {
         return Err(format!("Failed to download file: HTTP {}", response.status()).into());
     }
@@ -94,7 +98,7 @@ fn extract_tarball(url: String, lib_dir: &Path) -> Result<(), Box<dyn std::error
 
 #[cfg(target_os = "macos")]
 fn set_libraries() {
-    create_symlinks("macos".to_string());
+    create_symlinks("macos".to_string(), false);
     println!("cargo:rustc-link-search=native=.");
     println!("cargo:rustc-link-lib=static=hdfs");
     println!("cargo:rustc-link-lib=framework=Security");
@@ -103,9 +107,9 @@ fn set_libraries() {
 
 #[cfg(target_os = "linux")]
 fn set_libraries() {
-    create_symlinks("linux".to_string());
+    create_symlinks("linux".to_string(), true);
     println!("cargo:rustc-link-search=native=.");
-    println!("cargo:rustc-link-lib=static=hdfs");
+    println!("cargo:rustc-link-lib=hdfs");
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -113,7 +117,7 @@ fn main() {
     panic!("Unsupported target OS: HopsFS object store only supports macOS and Linux.");
 }
 
-fn create_symlinks(target_os: String) {
+fn create_symlinks(target_os: String, shared: bool) {
     let lib_dir = Path::new("lib");
 
     let filter = match target_os.as_str() {
@@ -122,13 +126,23 @@ fn create_symlinks(target_os: String) {
         other => panic!("Unsupported target OS: {}", other),
     };
 
+    let lib_ext = if shared {
+        match target_os.as_str() {
+            "linux" => ".so",
+            "macos" => ".dylib",
+            other => panic!("Unsupported target OS: {}", other),
+        }
+    } else {
+        ".a"
+    };
+
     let mut lib_file = None;
     let mut header_file = None;
     for entry in fs::read_dir(lib_dir).expect("Could not read lib directory") {
         let entry = entry.expect("Error reading directory entry");
         let file_name = entry.file_name().into_string().expect("Invalid file name");
 
-        if file_name.ends_with(".a") && file_name.contains(filter) {
+        if file_name.ends_with(lib_ext) && file_name.contains(filter) {
             lib_file = Some(entry.path());
         } else if file_name.ends_with(".h") && file_name.contains(filter) {
             header_file = Some(entry.path());
@@ -138,7 +152,8 @@ fn create_symlinks(target_os: String) {
     let lib_file = lib_file.expect("Library file not found");
     let header_file = header_file.expect("Header file not found");
 
-    let symlink_lib = Path::new("libhdfs.a");
+    let symlink_lib_str = format!("libhdfs{}", lib_ext);
+    let symlink_lib = Path::new(&symlink_lib_str);
     let symlink_header = Path::new("libhdfs.h");
 
     if symlink_lib.exists() {
