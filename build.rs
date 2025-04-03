@@ -108,8 +108,10 @@ fn set_libraries() {
 #[cfg(target_os = "linux")]
 fn set_libraries() {
     create_symlinks("linux".to_string(), true);
-    println!("cargo:rustc-link-search=native=.");
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    println!("cargo:rustc-link-search=native={}", manifest_dir);
     println!("cargo:rustc-link-lib=hdfs");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
