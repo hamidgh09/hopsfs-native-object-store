@@ -1,5 +1,5 @@
 // #![warn(missing_docs)]
-//! [object_store::ObjectStore] implementation for the Native Rust HDFS client
+//! [ObjectStore] implementation for the Native Rust HDFS client
 //!
 //! # Usage
 //!
@@ -36,7 +36,6 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tokio::time::Instant;
 use tokio::{
     sync::{mpsc, oneshot},
     task::{self, JoinHandle},
@@ -182,7 +181,7 @@ impl ObjectStore for HdfsObjectStore {
         let final_file_path = make_absolute_file(location);
 
         // If we're not overwriting, do an upfront check to see if the file already
-        // exists. Otherwise we have to write the whole file and try to rename before
+        // exists. Otherwise, we have to write the whole file and try to rename before
         // finding out.
         let file_exists = self
             .client
@@ -193,7 +192,7 @@ impl ObjectStore for HdfsObjectStore {
             return Err(HdfsError::AlreadyExists(final_file_path)).to_object_store_err();
         }
 
-        let (mut tmp_file, tmp_file_path) = self.open_tmp_file(&final_file_path).await?;
+        let (tmp_file, tmp_file_path) = self.open_tmp_file(&final_file_path).await?;
 
         for bytes in payload {
             tmp_file.hdfs_write(bytes).await.to_object_store_err()?;
@@ -378,7 +377,7 @@ impl ObjectStore for HdfsObjectStore {
             .to_object_store_err()?)
     }
 
-    /// Renames a file only if the distination doesn't exist. This operation is guaranteed
+    /// Renames a file only if the destination doesn't exist. This operation is guaranteed
     /// to be atomic.
     async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
         Ok(self
@@ -452,7 +451,6 @@ type PartSender = mpsc::UnboundedSender<(oneshot::Sender<Result<()>>, PutPayload
 // On completing, rename the file to the actual target.
 struct HdfsMultipartWriter {
     client: Arc<Client>,
-    file_writer: Arc<FileWriter>,
     sender: Option<(JoinHandle<Result<()>>, PartSender)>,
     tmp_filename: String,
     final_filename: String,
@@ -471,7 +469,6 @@ impl HdfsMultipartWriter {
 
         Self {
             client,
-            file_writer: writer,
             sender: Some((writer_handle, sender)),
             tmp_filename: tmp_filename.to_string(),
             final_filename: final_filename.to_string(),
@@ -500,7 +497,7 @@ impl HdfsMultipartWriter {
                 }
             }
 
-            // If we've reached here, a write task failed so just return Err's for all new parts that come in
+            // If we've reached here, a write task failed so just return error's for all new parts that come in
             while let Some((sender, _)) = part_receiver.recv().await {
                 let _ = sender.send(
                     Err(HdfsError::OperationFailed(

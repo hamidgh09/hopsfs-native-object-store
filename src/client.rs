@@ -5,7 +5,6 @@ use crate::native;
 use crate::native::{hdfsFS, hdfsFile, hdfsFileInfo, tObjectKind, tSize};
 use bytes::Bytes;
 use futures::stream::Stream;
-use futures::StreamExt;
 use libc::{c_int, c_short, c_ushort, c_void, int32_t};
 use std::collections::HashMap;
 use std::pin::Pin;
@@ -364,7 +363,7 @@ impl HopsClient {
         Ok(res.unwrap())
     }
     pub async fn get_file_info(&self, path: &str) -> Result<FileStatus> {
-        unsafe {
+
             let refined_path = CString::new(path).unwrap();
             let path_owned = path.to_string();
             let connection = self.get_connection();
@@ -408,7 +407,6 @@ impl HopsClient {
             .map_err(|_| HdfsError::FileNotFound(path.to_string()))??;
 
             Ok(file_status)
-        }
     }
 
     pub async fn open_for_read(&self, path: &str) -> Result<FileReader> {
@@ -478,7 +476,6 @@ impl HopsClient {
     }
 
     pub async fn rename(&self, from: &str, to: &str, overwrite: bool) -> Result<()> {
-        unsafe {
             let destination_exists = self.check_file_exists(to).await?;
             if destination_exists && !overwrite {
                 Err(HdfsError::AlreadyExists(to.to_string()))?
@@ -496,7 +493,6 @@ impl HopsClient {
             if res.is_err() || res.unwrap() != 0 {
                 return Err(HdfsError::OperationFailed("rename failed!".to_string()));
             }
-        }
         Ok(())
     }
 
