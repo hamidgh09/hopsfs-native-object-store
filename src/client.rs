@@ -17,7 +17,7 @@ use thiserror::Error;
 use tokio::task;
 
 const DATA_BLOCK_SIZE: usize = 65536;
-const MAX_CONNECTIONS: usize = 4;
+const MAX_CONNECTIONS: usize = 1;
 
 #[derive(Error, Debug)]
 pub enum HdfsError {

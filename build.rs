@@ -10,36 +10,32 @@ use url::Url;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let lib_url = env::var("HOPS_LIB_URL").unwrap_or_default();
-    let lib_dir = Path::new("lib");
-    if !lib_dir.exists() {
-        fs::create_dir(lib_dir)?;
-    }
-
-    if !lib_url.is_empty() {
-        extract_tarball(lib_url, lib_dir)?;
-    }
-
+    extract_tarball()?;
     set_libraries();
     Ok(())
 }
 
-fn extract_tarball(url: String, lib_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let parsed_url = Url::parse(&url)?;
-    let filename = parsed_url
-        .path_segments()
-        .and_then(|segments| segments.last())
-        .and_then(|name| if name.is_empty() { None } else { Some(name) })
-        .ok_or("Could not extract filename from URL")?;
-    let tarball_path = Path::new(filename);
+fn extract_tarball() -> Result<(), Box<dyn std::error::Error>> {
+    if env::var("CARGO_FEATURE_SKIP_DOWNLOAD").is_ok() {
+        info!("Downloading dependencies skipped.");
+        return Ok(());
+    }
 
-    info!("Downloading tarball from {}", url);
+    let base_url = env::var("HOPS_LIB_BASE_URL")
+        .expect("HOPS_LIB_BASE_URL environment variable is not set");
+
+    let filename = find_hops_lib_filename();
+
+    let lib_url = format!("{}/{}", base_url, filename);
+    let tarball_path = Path::new(&filename);
+
+    info!("Downloading tarball from {}", lib_url);
 
     let lib_username = env::var("HOPS_LIB_USERNAME").unwrap_or_default();
     let lib_password = env::var("HOPS_LIB_PASSWORD").unwrap_or_default();
 
     let client = reqwest::blocking::Client::new();
-    let mut request_builder = client.get(&url);
+    let mut request_builder = client.get(&lib_url);
     if !lib_username.is_empty() && !lib_password.is_empty() {
         request_builder = request_builder.basic_auth(lib_username, Some(lib_password));
     }
@@ -84,6 +80,15 @@ fn extract_tarball(url: String, lib_dir: &Path) -> Result<(), Box<dyn std::error
     let mut options = CopyOptions::default();
     options.overwrite = true;
     options.content_only = true;
+
+    let lib_dir = Path::new("lib");
+    if !lib_dir.exists() {
+        fs::create_dir(lib_dir)?;
+    }
+    else {
+        fs::remove_dir_all(lib_dir)?;
+    }
+
     fs_extra::dir::copy(&search_dir, lib_dir, &options)?;
     info!(
         "Copied library and header files to directory: {:?}",
@@ -94,6 +99,14 @@ fn extract_tarball(url: String, lib_dir: &Path) -> Result<(), Box<dyn std::error
     fs::remove_file(&tarball_path)?;
     info!("Cleaned up temporary files");
     Ok(())
+}
+
+fn find_hops_lib_filename() -> String {
+    let version_content = fs::read_to_string("HOPS_VERSION")
+        .expect("Failed to read HOPS_VERSION file");
+    let version = version_content.trim();
+    format!("hops-{}.tgz", version)
+
 }
 
 #[cfg(target_os = "macos")]
