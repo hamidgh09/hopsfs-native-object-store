@@ -45,7 +45,7 @@ pub type Client = HopsClient;
 use crate::client::ReadRangeStream;
 pub use crate::client::{FileStatus, FileWriter, HdfsError, WriteOptions};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HdfsObjectStore {
     client: Arc<Client>,
 }

@@ -1,6 +1,6 @@
 [package]
 name = "hdfs-native-object-store"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["Adam Binford <adamq43@gmail.com>"]
 homepage = "https://github.com/datafusion-contrib/hdfs-native-object-store"
