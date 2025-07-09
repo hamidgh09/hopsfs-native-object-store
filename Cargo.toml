@@ -38,3 +38,6 @@ serial_test = "3"
 default = ["skip-download"]
 integration-test = []
 skip-download = []
+
+[profile.release]
+debug = false
