@@ -1,6 +1,6 @@
 [package]
-name = "hdfs-native-object-store"
-version = "1.1.0"
+name = "hopsfs-native-object-store"
+version = "1.2.1"
 edition = "2024"
 authors = ["Adam Binford <adamq43@gmail.com>", "Hamid Ghasemirahni <hamid@hopsworks.ai>", "Salman Niazi<salman@hopsworks.ai>"]
 homepage = "https://github.com/logicalclocks/hopsfs-native-object-store/tree/dev"
@@ -36,4 +36,3 @@ serial_test = "3"
 [features]
 default = []
 integration-test = []
-skip-download = []

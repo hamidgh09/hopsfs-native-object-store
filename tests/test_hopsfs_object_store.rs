@@ -2,7 +2,7 @@
 mod test {
     use bytes::{BufMut, Bytes, BytesMut};
     use futures::StreamExt;
-    use hdfs_native_object_store::HdfsObjectStore;
+    use hopsfs_native_object_store::HdfsObjectStore;
     use object_store::path::Path;
     use object_store::{
         GetOptions, GetRange, GetResultPayload, ObjectStore, PutMode, PutOptions, PutPayload,

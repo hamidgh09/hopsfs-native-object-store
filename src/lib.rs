@@ -3,7 +3,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use hdfs_native_object_store::HdfsObjectStoreBuilder;
+//! use hopsfs_native_object_store::HdfsObjectStoreBuilder;
 //! let store = HdfsObjectStoreBuilder::new()
 //!     .with_url("hdfs://localhost:8020")
 //!     .build()
@@ -131,7 +131,7 @@ impl HdfsObjectStore {
     ///
     /// ```rust
     /// # use std::sync::Arc;
-    /// # use hdfs_native_object_store::{Client, HdfsObjectStore};
+    /// # use hopsfs_native_object_store::{Client, HdfsObjectStore};
     /// let client = Client::with_url("hdfs://127.0.0.1:8020").unwrap();
     /// let store = HdfsObjectStore::new(Arc::new(client));
     /// ```
@@ -146,7 +146,7 @@ impl HdfsObjectStore {
     ///
     /// Connect to a NameNode
     /// ```rust
-    /// # use hdfs_native_object_store::HdfsObjectStore;
+    /// # use hopsfs_native_object_store::HdfsObjectStore;
     /// # fn main() -> object_store::Result<()> {
     /// let store = HdfsObjectStore::with_url("hdfs://127.0.0.1:8020")?;
     /// # Ok(())
@@ -161,7 +161,7 @@ impl HdfsObjectStore {
     ///
     /// Connect to a NameService
     /// ```rust
-    /// # use hdfs_native_object_store::HdfsObjectStore;
+    /// # use hopsfs_native_object_store::HdfsObjectStore;
     /// # use std::collections::HashMap;
     /// # fn main() -> object_store::Result<()> {
     /// let config = HashMap::from([

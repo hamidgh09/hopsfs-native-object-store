@@ -4,31 +4,48 @@ use std::env;
 use std::fs::{self, File};
 use std::io;
 use std::os::unix::fs::symlink;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const LIBHDFS_BASE_URL: &str = "https://repo.hops.works/master/libhdfs";
+const LIB_DIR_ENV: &str = "HDFS_LIB_DIR";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    download_and_extract_libhdfs()?;
-    set_libraries();
+    println!("cargo:rerun-if-env-changed={}", LIB_DIR_ENV);
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    println!("cargo:rerun-if-changed=HOPS_VERSION");
+    println!("cargo:rerun-if-changed=build.rs");
+
+    // docs.rs builds in an offline sandbox and only runs `cargo doc`, which
+    // never invokes the linker — so we skip downloading libhdfs and emitting
+    // link directives entirely.
+    if env::var("DOCS_RS").is_ok() {
+        return Ok(());
+    }
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    let lib_dir = resolve_lib_dir(&out_dir)?;
+    set_libraries(&out_dir, &lib_dir);
     Ok(())
 }
 
-fn download_and_extract_libhdfs() -> Result<(), Box<dyn std::error::Error>> {
-    let lib_dir = Path::new("lib");
-
-    // Skip download if feature is enabled and lib directory already contains files
-    if env::var("CARGO_FEATURE_SKIP_DOWNLOAD").is_ok() && lib_dir.exists() {
-        let has_files = fs::read_dir(lib_dir)?.next().is_some();
-        if has_files {
-            info!("Skipping download: lib directory already exists with files");
-            return Ok(());
+fn resolve_lib_dir(out_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(dir) = env::var(LIB_DIR_ENV) {
+        let dir = PathBuf::from(dir);
+        if !dir.is_dir() {
+            return Err(format!("{}={:?} is not a directory", LIB_DIR_ENV, dir).into());
         }
+        info!("Using prebuilt libhdfs from {:?}", dir);
+        return Ok(dir);
     }
 
-    // Read version from HOPS_VERSION file
+    let lib_dir = out_dir.join("lib");
+    download_and_extract_libhdfs(&lib_dir)?;
+    Ok(lib_dir)
+}
+
+fn download_and_extract_libhdfs(lib_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let version = fs::read_to_string("HOPS_VERSION")
         .expect("Failed to read HOPS_VERSION file")
         .trim()
@@ -37,7 +54,6 @@ fn download_and_extract_libhdfs() -> Result<(), Box<dyn std::error::Error>> {
     let tarball_url = format!("{}/libhdfs-golang-{}.tar.gz", LIBHDFS_BASE_URL, version);
     info!("Downloading libhdfs-golang from {}", tarball_url);
 
-    // Download the tarball
     let client = reqwest::blocking::Client::new();
     let response = client.get(&tarball_url).send()?;
 
@@ -49,20 +65,17 @@ fn download_and_extract_libhdfs() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    // Create lib directory if it doesn't exist
     if lib_dir.exists() {
         fs::remove_dir_all(lib_dir)?;
     }
-    fs::create_dir(lib_dir)?;
+    fs::create_dir_all(lib_dir)?;
 
-    // Extract tarball directly to lib directory
     let decoder = GzDecoder::new(response);
     let mut archive = tar::Archive::new(decoder);
 
     for entry in archive.entries()? {
         let mut entry = entry?;
 
-        // Skip directory entries and extract only files
         if !entry.header().entry_type().is_file() {
             continue;
         }
@@ -87,9 +100,9 @@ fn download_and_extract_libhdfs() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(target_os = "macos")]
-fn set_libraries() {
-    create_symlinks("macos", false);
-    println!("cargo:rustc-link-search=native=.");
+fn set_libraries(out_dir: &Path, lib_dir: &Path) {
+    create_symlinks(out_dir, lib_dir, "macos", false);
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=hdfs");
     println!("cargo:rustc-link-lib=framework=Security");
     println!("cargo:rustc-link-lib=framework=CoreFoundation");
@@ -97,22 +110,19 @@ fn set_libraries() {
 }
 
 #[cfg(target_os = "linux")]
-fn set_libraries() {
-    create_symlinks("linux", true);
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    println!("cargo:rustc-link-search=native={}", manifest_dir);
+fn set_libraries(out_dir: &Path, lib_dir: &Path) {
+    create_symlinks(out_dir, lib_dir, "linux", true);
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=hdfs");
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn set_libraries() {
+fn set_libraries(_out_dir: &Path, _lib_dir: &Path) {
     panic!("Unsupported target OS: HopsFS object store only supports macOS and Linux.");
 }
 
-fn create_symlinks(target_os: &str, shared: bool) {
-    let lib_dir = Path::new("lib");
-
+fn create_symlinks(out_dir: &Path, lib_dir: &Path, target_os: &str, shared: bool) {
     let filter = match target_os {
         "linux" => "linux-amd64",
         "macos" => "arm64",
@@ -149,23 +159,21 @@ fn create_symlinks(target_os: &str, shared: bool) {
     let lib_file = lib_file.expect("Library file not found");
     let header_file = header_file.expect("Header file not found");
 
-    let symlink_lib_str = format!("libhdfs{}", lib_ext);
-    let symlink_lib = Path::new(&symlink_lib_str);
-    let symlink_header = Path::new("libhdfs.h");
+    let symlink_lib = out_dir.join(format!("libhdfs{}", lib_ext));
+    let symlink_header = out_dir.join("libhdfs.h");
 
-    // Remove existing symlinks (use symlink_metadata to detect broken symlinks too)
     if symlink_lib.symlink_metadata().is_ok() {
-        fs::remove_file(symlink_lib).expect("Failed to remove existing library symlink");
+        fs::remove_file(&symlink_lib).expect("Failed to remove existing library symlink");
     }
     if symlink_header.symlink_metadata().is_ok() {
-        fs::remove_file(symlink_header).expect("Failed to remove existing header symlink");
+        fs::remove_file(&symlink_header).expect("Failed to remove existing header symlink");
     }
 
-    symlink(&lib_file, symlink_lib).expect("Failed to create symlink for library");
-    symlink(&header_file, symlink_header).expect("Failed to create symlink for header");
+    symlink(&lib_file, &symlink_lib).expect("Failed to create symlink for library");
+    symlink(&header_file, &symlink_header).expect("Failed to create symlink for header");
 
     info!(
-        "Created symlinks: {} -> {:?}, libhdfs.h -> {:?}",
-        symlink_lib_str, lib_file, header_file
+        "Created symlinks: {:?} -> {:?}, {:?} -> {:?}",
+        symlink_lib, lib_file, symlink_header, header_file
     );
 }

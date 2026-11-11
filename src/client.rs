@@ -20,6 +20,9 @@ use tokio::task;
 const DATA_BLOCK_SIZE: usize = 65536;
 const MAX_CONNECTIONS: usize = 1;
 
+/// URI schemes recognized by this client.
+const SUPPORTED_SCHEMES: &[&str] = &["hdfs://", "hopsfs://"];
+
 #[derive(Error, Debug)]
 pub enum HdfsError {
     #[error("File not found at {0}")]
@@ -77,13 +80,30 @@ pub struct FileStatus {
     pub blocksize: Option<u64>,
 }
 
+/// Strip a supported `scheme://` prefix, returning the remainder if matched.
+fn strip_supported_scheme(uri: &str) -> Option<&str> {
+    SUPPORTED_SCHEMES.iter().find_map(|s| uri.strip_prefix(s))
+}
+
+/// Strip scheme and authority from a libhdfs path, e.g.
+/// `hdfs://host:port/foo` -> `/foo`. Unchanged if the scheme is unsupported.
+fn strip_scheme_authority(path: &str) -> &str {
+    let Some(after_authority) = strip_supported_scheme(path) else {
+        return path;
+    };
+    match after_authority.find('/') {
+        Some(i) => &after_authority[i..],
+        None => "/",
+    }
+}
+
 impl FileStatus {
     pub fn from_hdfs_file_info(file_info: *const hdfsFileInfo) -> Result<Self> {
         unsafe {
             let path = CStr::from_ptr((*file_info).mName)
                 .to_str()
                 .ok()
-                .map(|s| s.to_owned());
+                .map(|s| strip_scheme_authority(s).to_owned());
 
             let owner = CStr::from_ptr((*file_info).mOwner)
                 .to_str()
@@ -645,10 +665,7 @@ impl HopsClient {
 fn extract_host_and_port(uri: &str) -> (String, u16) {
     let default_port = 8020;
 
-    let stripped_uri = uri
-        .strip_prefix("hdfs://")
-        .or_else(|| uri.strip_prefix("hopsfs://"))
-        .unwrap_or(uri);
+    let stripped_uri = strip_supported_scheme(uri).unwrap_or(uri);
 
     let mut parts = stripped_uri.split(':');
     let host = parts.next().unwrap_or("").to_string();

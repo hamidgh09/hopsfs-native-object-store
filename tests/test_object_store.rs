@@ -1,7 +1,7 @@
 #[cfg(feature = "integration-test")]
 mod test {
     use bytes::{Buf, BufMut, BytesMut};
-    use hdfs_native_object_store::{HdfsObjectStore, HopsClient, WriteOptions};
+    use hopsfs_native_object_store::{HdfsObjectStore, HopsClient, WriteOptions};
     use object_store::{PutMode, PutOptions, PutPayload};
     use serial_test::serial;
     use std::sync::Arc;
