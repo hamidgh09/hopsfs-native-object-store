@@ -177,4 +177,63 @@ mod test {
 
         Ok(())
     }
+
+    /// Several writers on separate connections put the same path with PutMode::Create at
+    /// once, as Delta writers committing the same log version do. Exactly one must
+    /// succeed, the others must get AlreadyExists, the file must hold the winner's bytes
+    /// and no temp file may be left behind.
+    #[tokio::test]
+    async fn test_put_create_race() -> object_store::Result<()> {
+        let (writers, rounds) = (8, 10);
+        let stores = (0..writers)
+            .map(|_| HdfsObjectStore::with_url("hdfs://127.0.0.1:8020"))
+            .collect::<object_store::Result<Vec<_>>>()?;
+        // A fresh directory per run, so a failed run cannot break the next one.
+        let run_dir = format!("test-put-create-race-{}", uuid::Uuid::new_v4());
+
+        for round in 0..rounds {
+            let parent = Path::from(format!("{run_dir}/round-{round}"));
+            let path = parent.child("00000000000000000000.json");
+            let puts = stores.iter().enumerate().map(|(i, store)| {
+                store.put_opts(
+                    &path,
+                    PutPayload::from(format!("writer-{i}")),
+                    PutOptions {
+                        mode: PutMode::Create,
+                        ..Default::default()
+                    },
+                )
+            });
+            let results = futures::future::join_all(puts).await;
+
+            let winners: Vec<usize> = (0..writers).filter(|i| results[*i].is_ok()).collect();
+            assert_eq!(winners.len(), 1, "round {round}: winners {winners:?}");
+            for result in &results {
+                if let Err(e) = result {
+                    assert!(
+                        matches!(e, object_store::Error::AlreadyExists { .. }),
+                        "round {round}: a losing put failed with {e}"
+                    );
+                }
+            }
+
+            let got = stores[0].get(&path).await?.bytes().await?;
+            assert_eq!(got, Bytes::from(format!("writer-{}", winners[0])));
+
+            let listed = stores[0].list_with_delimiter(Some(&parent)).await?;
+            assert_eq!(
+                listed.objects.len(),
+                1,
+                "round {round}: leftover files {:?}",
+                listed.objects
+            );
+
+            // Deletes are not recursive: remove the file, then its directory.
+            stores[0].delete(&path).await?;
+            stores[0].delete(&parent).await?;
+        }
+
+        stores[0].delete(&Path::from(run_dir)).await?;
+        Ok(())
+    }
 }
