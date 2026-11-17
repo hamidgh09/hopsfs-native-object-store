@@ -97,6 +97,26 @@ fn strip_scheme_authority(path: &str) -> &str {
     }
 }
 
+/// Reset this thread's errno before a libhdfs call whose errno is inspected afterwards.
+fn clear_errno() {
+    // SAFETY: both functions return a valid pointer to the calling thread's errno.
+    unsafe {
+        #[cfg(target_os = "macos")]
+        {
+            *libc::__error() = 0;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            *libc::__errno_location() = 0;
+        }
+    }
+}
+
+/// errno left by the last libhdfs call on this thread (0 if it did not set one).
+fn last_errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
 impl FileStatus {
     pub fn from_hdfs_file_info(file_info: *const hdfsFileInfo) -> Result<Self> {
         unsafe {
@@ -523,24 +543,39 @@ impl HopsClient {
     }
 
     pub async fn rename(&self, from: &str, to: &str, overwrite: bool) -> Result<()> {
-        let destination_exists = self.check_file_exists(to).await?;
-        if destination_exists && !overwrite {
-            Err(HdfsError::AlreadyExists(to.to_string()))?
-        }
-
-        let _from = CString::new(from).unwrap();
-        let _to = CString::new(to).unwrap();
+        let _from = CString::new(from)
+            .map_err(|_| HdfsError::InvalidPath(from.to_string()))?;
+        let _to = CString::new(to).map_err(|_| HdfsError::InvalidPath(to.to_string()))?;
         let connection = self.get_connection();
 
-        let res = self.spawn_blocking(move || unsafe {
-            native::hdfsRename(connection.get_conn_ptr(), _from.as_ptr(), _to.as_ptr())
-        })
-        .await;
+        // errno is per thread, so it is cleared, set by libhdfs and read inside one
+        // blocking task. Clearing it first keeps a value left over from an earlier call
+        // on this pooled thread from being mistaken for EEXIST.
+        let res = self
+            .spawn_blocking(move || unsafe {
+                clear_errno();
+                let ret = if overwrite {
+                    native::hdfsRename(connection.get_conn_ptr(), _from.as_ptr(), _to.as_ptr())
+                } else {
+                    native::hdfsRename2(
+                        connection.get_conn_ptr(),
+                        _from.as_ptr(),
+                        _to.as_ptr(),
+                        native::HDFS_RENAME_NOREPLACE,
+                    )
+                };
+                if ret == 0 { Ok(()) } else { Err(last_errno()) }
+            })
+            .await
+            .map_err(|_| HdfsError::OperationFailed("rename failed!".to_string()))?;
 
-        if res.is_err() || res.unwrap() != 0 {
-            return Err(HdfsError::OperationFailed("rename failed!".to_string()));
+        match res {
+            Ok(()) => Ok(()),
+            Err(libc::EEXIST) if !overwrite => Err(HdfsError::AlreadyExists(to.to_string())),
+            Err(errno) => Err(HdfsError::OperationFailed(format!(
+                "rename {from} to {to} failed (errno {errno})"
+            ))),
         }
-        Ok(())
     }
 
     pub async fn delete(&self, path: &str, _recursive: bool) -> Result<bool> {

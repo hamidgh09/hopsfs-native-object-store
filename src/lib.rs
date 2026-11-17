@@ -204,23 +204,21 @@ impl HdfsObjectStore {
             .to_object_store_err()?
             .to_string();
 
+        let uuid = uuid::Uuid::new_v4();
         let tmp_file_path = path_buf
-            .with_file_name(format!(".{}.tmp", file_name))
+            .with_file_name(format!(".{}.{}.tmp", file_name, uuid))
             .to_str()
             .ok_or(HdfsError::NoneUnicodeInPath(file_path.to_string()))
             .to_object_store_err()?
             .to_string();
 
-        // Try to create a file with an incrementing index until we find one that doesn't exist yet
-        let mut index = 1;
-        loop {
-            let path = format!("{}.{}", tmp_file_path, index);
-            match self.client.create(&path, WriteOptions::default()).await {
-                Ok(writer) => break Ok((writer, path)),
-                Err(HdfsError::AlreadyExists(_)) => index += 1,
-                Err(e) => break Err(e).to_object_store_err(),
-            }
-        }
+        let writer = self
+            .client
+            .create(&tmp_file_path, WriteOptions::default())
+            .await
+            .to_object_store_err()?;
+
+        Ok((writer, tmp_file_path))
     }
 }
 
@@ -275,22 +273,31 @@ impl ObjectStore for HdfsObjectStore {
 
         let (tmp_file, tmp_file_path) = self.open_tmp_file(&final_file_path).await?;
 
-        for bytes in payload {
-            tmp_file.hdfs_write(bytes).await.to_object_store_err()?;
+        let result = async {
+            for bytes in payload {
+                tmp_file.hdfs_write(bytes).await.to_object_store_err()?;
+            }
+            tmp_file.close_file().await.to_object_store_err()?;
+
+            self.client
+                .rename(&tmp_file_path, &final_file_path, overwrite)
+                .await
+                .to_object_store_err()?;
+
+            let e_tag = self.head(location).await?.e_tag;
+
+            Ok(PutResult {
+                e_tag,
+                version: None,
+            })
         }
-        tmp_file.close_file().await.to_object_store_err()?;
+        .await;
 
-        self.client
-            .rename(&tmp_file_path, &final_file_path, overwrite)
-            .await
-            .to_object_store_err()?;
+        if result.is_err() {
+            let _ = self.client.delete(&tmp_file_path, false).await;
+        }
 
-        let e_tag = self.head(location).await?.e_tag;
-
-        Ok(PutResult {
-            e_tag,
-            version: None,
-        })
+        result
     }
 
     /// Create a multipart writer that writes to a temporary file in a background task, and renames
@@ -662,10 +669,16 @@ impl MultipartUpload for HdfsMultipartWriter {
             // Wait for the writer task to finish
             handle.await??;
 
-            self.client
+            let rename_result = self
+                .client
                 .rename(&self.tmp_filename, &self.final_filename, true)
                 .await
-                .to_object_store_err()?;
+                .to_object_store_err();
+
+            if rename_result.is_err() {
+                let _ = self.client.delete(&self.tmp_filename, false).await;
+                return rename_result.map(|_| unreachable!());
+            }
 
             Ok(PutResult {
                 e_tag: None,
@@ -696,6 +709,22 @@ impl MultipartUpload for HdfsMultipartWriter {
             Err(object_store::Error::NotSupported {
                 source: "Cannot call abort or complete multiple times".into(),
             })
+        }
+    }
+}
+
+impl Drop for HdfsMultipartWriter {
+    fn drop(&mut self) {
+        // If sender is still present, neither complete() nor abort() was called.
+        // Clean up the temp file to avoid orphaned files on HDFS.
+        if let Some((handle, sender)) = self.sender.take() {
+            drop(sender);
+            handle.abort();
+            let client = Arc::clone(&self.client);
+            let tmp_filename = self.tmp_filename.clone();
+            tokio::task::spawn(async move {
+                let _ = client.delete(&tmp_filename, false).await;
+            });
         }
     }
 }

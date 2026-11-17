@@ -71,6 +71,9 @@ pub struct hdfsFileInfo {
     pub mLastAccess: tTime,
 }
 
+/// `hdfsRename2` flag: fail with errno EEXIST when the destination exists.
+pub const HDFS_RENAME_NOREPLACE: c_int = 1;
+
 #[link(name = "hdfs")]
 unsafe extern "C" {
 
@@ -550,6 +553,24 @@ unsafe extern "C" {
     /// #### Return
     /// Returns 0 on success, -1 on error.
     pub fn hdfsRename(fs: *const hdfsFS, oldPath: *const c_char, newPath: *const c_char) -> c_int;
+
+    /// Rename file with options, in a single namenode call.
+    ///
+    /// #### Params
+    /// * ```fs``` - The configured filesystem handle.
+    /// * ```oldPath``` - The path of the source file.
+    /// * ```newPath``` - The path of the destination file.
+    /// * ```flags``` - 0, or [HDFS_RENAME_NOREPLACE]: the namenode fails the rename with
+    ///   errno EEXIST when `newPath` exists, instead of replacing it.
+    ///
+    /// #### Return
+    /// Returns 0 on success, -1 on error.
+    pub fn hdfsRename2(
+        fs: *const hdfsFS,
+        oldPath: *const c_char,
+        newPath: *const c_char,
+        flags: c_int,
+    ) -> c_int;
 
     /// Get the current working directory for the given filesystem.
     ///
