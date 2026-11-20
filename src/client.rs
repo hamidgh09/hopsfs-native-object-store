@@ -702,7 +702,9 @@ fn extract_host_and_port(uri: &str) -> (String, u16) {
 
     let stripped_uri = strip_supported_scheme(uri).unwrap_or(uri);
 
-    let mut parts = stripped_uri.split(':');
+    let authority = stripped_uri.split('/').next().unwrap_or("");
+
+    let mut parts = authority.split(':');
     let host = parts.next().unwrap_or("").to_string();
     let port = parts
         .next()
@@ -710,6 +712,25 @@ fn extract_host_and_port(uri: &str) -> (String, u16) {
         .unwrap_or(default_port);
 
     (host, port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_host_and_port;
+
+    #[test]
+    fn host_and_port_from_url() {
+        let cases = [
+            ("hdfs://nn:8020", ("nn", 8020)),
+            ("hdfs://nn", ("nn", 8020)),
+            ("hdfs://nn/a/b", ("nn", 8020)),
+            ("hdfs://10.0.0.1:32526/a/b:c", ("10.0.0.1", 32526)),
+            ("nn:31219/a", ("nn", 31219)),
+        ];
+        for (uri, (host, port)) in cases {
+            assert_eq!(extract_host_and_port(uri), (host.to_string(), port), "{uri}");
+        }
+    }
 }
 
 pub struct ReadRangeStream {
